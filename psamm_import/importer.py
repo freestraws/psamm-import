@@ -34,7 +34,8 @@ from psamm.expression import boolean
 from psamm.formula import Formula
 
 from .util import mkdir_p
-from .model import ParseError, ModelLoadError
+from .model import (MetabolicModel, CompoundEntry, ReactionEntry, ParseError,
+                    ModelLoadError)
 
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,92 @@ def detect_best_flux_limit(model):
 
     best_flux_limit, _ = flux_limit_count.most_common(1)[0]
     return best_flux_limit
+
+
+def dicts_are_compatible(d1, d2):
+    return all(key not in d1 or key not in d2 or d1[key] == d2[key]
+               for key in set(d1) | set(d2))
+
+
+def merge_equivalent_compounds(model):
+    """Create a model where equivalent compounds are merged."""
+
+    compound_groups = {}
+    for _, compound in iteritems(model.compounds):
+        if 'compartment' in compound.properties:
+            compartment = compound.properties['compartment']
+            group_name = compound.id
+            if group_name.endswith('_' + compartment):
+                group_name = group_name[:-(len(compartment) + 1)]
+
+            compound_groups.setdefault(group_name, set()).add(
+                (compound.id, compartment))
+
+    compound_mapping = {}
+    merged_compounds = {}
+    for group, compound_set in iteritems(compound_groups):
+        # Try to merge as many compounds as possible
+        merged = []
+        for compound_id, compartment in compound_set:
+            props = dict(model.compounds[compound_id].properties)
+            props.pop('id', None)
+            props.pop('compartment', None)
+            for merged_props, merged_set in merged:
+                if dicts_are_compatible(props, merged_props):
+                    merged_set.add((compound_id, compartment))
+                    merged_props.update(props)
+                    break
+                else:
+                    keys = set(key for key in set(props) | set(merged_props)
+                               if key not in props or key not in merged_props
+                                  or props[key] != merged_props[key])
+                    logger.info(
+                        'Unable to merge {} into {}, difference in'
+                        ' keys: {}'.format(compound_id, merged_set, keys))
+            else:
+                merged.append((props, set([(compound_id, compartment)])))
+
+        if len(merged) == 1:
+            merged_props, merged_set = merged[0]
+            logger.info('Merging compounds {} into {}...'.format(
+                merged_set, group))
+
+            for compound_id, _ in merged_set:
+                compound_mapping[compound_id] = group
+            merged_compounds[group] = merged_props
+        else:
+            for merged_props, merged_set in merged:
+                compartments = set(comp for _, comp in merged_set)
+                merged_name = '{}_{}'.format(
+                    group, ''.join(sorted(compartments)))
+                logger.info('Merging compounds {} into {}...'.format(
+                    merged_set, merged_name))
+
+                for compound_id, _ in merged_set:
+                    compound_mapping[compound_id] = merged_name
+                merged_compounds[merged_name] = merged_props
+
+    def translate_reactions():
+        for _, reaction in iteritems(model.reactions):
+            properties = dict(reaction.properties)
+            if 'equation' in properties:
+                properties['equation'] = (
+                    properties['equation'].translated_compounds(
+                        lambda c: compound_mapping.get(c, c)))
+            yield ReactionEntry(**properties)
+
+    def translate_compounds():
+        for _, compound in iteritems(model.compounds):
+            if compound.id not in compound_mapping:
+                yield compound
+
+        for compound_id, properties in iteritems(merged_compounds):
+            yield CompoundEntry(id=compound_id, **properties)
+
+    new_model = MetabolicModel(
+        model.name, translate_compounds(), translate_reactions())
+    new_model.biomass_reaction = model.biomass_reaction
+    return new_model
 
 
 def model_compounds(model):
@@ -421,6 +508,7 @@ def main():
         logger.error(text_type(e))
         sys.exit(-1)
 
+    model = merge_equivalent_compounds(model)
     model.print_summary()
 
     # Create destination directory if not exists
