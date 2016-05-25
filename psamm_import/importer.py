@@ -60,7 +60,44 @@ def boolean_expression_representer(dumper, data):
 
 
 def reaction_representer(dumper, data):
-    return dumper.represent_unicode(text_type(data))
+    """If the reaction is long, equation is represented better than just a line
+
+    Makes a dictionary to hold the state of reversible, the left side of the equation, and the right.
+    Then in that dictionary the left side is broken into the compounds on its side.
+    Each compound is a list of its id and value.  Because objects like compound do 
+    not fit the requirement of represent_dict, it has to be converted to unicode, and value is 
+    also a non-default type so it is converted to float but only when it's not an int."""
+
+    if len(data.compounds) > 10:
+        left = []
+        right =[]
+
+        def dictMake(comp, val):
+            if type(val) is not int:
+                val = float(val)
+            return {'id': text_type(comp), 'value': val}
+
+        for compound, value in data.left:
+            d = dictMake(compound, value)
+            left.append(d)
+
+        for compound, value in data.right:
+            d = dictMake(compound, value)
+            right.append(d)
+
+        if data.direction == Direction.Both:
+            direction = True
+        else:
+            direction = False
+
+        inner = OrderedDict()
+        inner['reversible'] = direction
+        inner['left'] = left
+        inner['right'] = right
+
+        return dumper.represent_data(inner)
+    else:
+        return dumper.represent_unicode(text_type(data))
 
 
 def formula_representer(dumper, data):
