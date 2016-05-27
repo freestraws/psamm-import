@@ -116,19 +116,67 @@ def model_compounds(model):
         yield d
 
 
-def model_reactions(model, exchange=False):
-    """Yield model reactions as YAML dicts"""
+def reactions_to_files(model, dest, yaml_args, exchange):
+    """Turns the reaction subsystems into their own files.
 
+    If a subsystem has a number of reactions over the threshold, it gets its
+    own yaml file. All other reactions, those that don't have a subsystem or
+    are in a subsystem that falls below the threshold, get added to a common
+    reaction file."""
+
+    common = []
+    allsubsysids = []
+    allsubsys = []
+    subsysFiles = []
     for reaction_id, reaction in sorted(iteritems(model.reactions)):
+        subsys = reaction.subsystem
+        r = reaction
+        if(subsys is not None and subsys not in allsubsysids and
+                len(r.equation.compounds) != 1):
+            allsubsysids.append(subsys)
+            allsubsys.append([r])
+        elif subsys in allsubsysids:
+            subsysIndex = allsubsysids.index(subsys)
+            allsubsys[subsysIndex].append(r)
+        elif len(r.equation.compounds) != 1:
+            common.append(r)
+
+    for subsys in allsubsys:
+            if len(subsys) < 3:
+                for r in subsys:
+                    common.append(r)
+                allsubsys.remove(subsys)
+
+    common = list(model_reactions(common, exchange=exchange))
+    if len(allsubsys) > 0:
+        for subsys in allsubsys:
+            subsysfile = str(subsys[1].subsystem).replace('/', '_') + '.yaml'
+            subsysFiles.append(subsysfile)
+            subsys = list(model_reactions(subsys, exchange=exchange))
+            with open(os.path.join(dest, subsysfile), 'w+') as f:
+                yaml.safe_dump(subsys, f, **yaml_args)
+        with open(os.path.join(dest, 'otherReactions.yaml'), 'w+') as f:
+            yaml.safe_dump(common, f, **yaml_args)
+    else:
+        reactions = list(model_reactions(common, exchange=exchange))
+        with open(os.path.join(dest, 'reactions.yaml'), 'w+') as f:
+            yaml.safe_dump(reactions, f, **yaml_args)
+    return subsysFiles
+
+
+def model_reactions(reactionList, exchange=False):
+    """Yield list of reactions as YAML dicts"""
+
+    for reaction in reactionList:
         d = OrderedDict()
-        d['id'] = reaction_id
+        d['id'] = reaction.id
 
         # Check reaction equation
         equation = reaction.properties.get('equation')
         if equation is not None and len(equation.compounds) == 0:
             logger.warning(
                 'Reaction {} was removed since it has no compounds.'.format(
-                    reaction_id))
+                    reaction.id))
             continue
 
         # Check whether reaction is exchange
@@ -308,9 +356,7 @@ def write_yaml_model(model, dest='.', convert_medium=True):
         logger.info('Converting exchange reactions to medium definition')
 
     exchange = not convert_medium
-    with open(os.path.join(dest, 'reactions.yaml'), 'w+') as f:
-        reactions = list(model_reactions(model, exchange=exchange))
-        yaml.safe_dump(reactions, f, **yaml_args)
+    subsysFiles = reactions_to_files(model, dest, yaml_args, exchange)
 
     if convert_medium:
         with open(os.path.join(dest, 'medium.yaml'), 'w+') as f:
@@ -324,13 +370,24 @@ def write_yaml_model(model, dest='.', convert_medium=True):
             yaml.safe_dump(reaction_limits, f, **yaml_args)
 
     model_d = OrderedDict([('name', model.name)])
+
+    modelFileList = []
+    modelFileList.append(('compounds', [{'include': 'compounds.yaml'}]))
     if model.biomass_reaction is not None:
         model_d['biomass'] = model.biomass_reaction
     if default_flux_limit is not None:
         model_d['default_flux_limit'] = default_flux_limit
-    model_d.update([
-        ('compounds', [{'include': 'compounds.yaml'}]),
-        ('reactions', [{'include': 'reactions.yaml'}])])
+
+    if len(subsysFiles) > 0:
+        for File in subsysFiles:
+            fil = (File, [{'include': File}])
+            modelFileList.append(fil)
+        modelFileList.append(('otherReactions',
+                             [{'include': 'otherReactions.yaml'}]))
+        model_d.update(modelFileList)
+    else:
+        modelFileList.append(('reactions', [{'include': 'reactions.yaml'}]))
+    model_d.update(modelFileList)
 
     if convert_medium:
         model_d['media'] = [{'include': 'medium.yaml'}]
