@@ -140,6 +140,7 @@ def detect_extracellular(model):
             compartment = compound.compartment
             extracellular_key[compartment] += 1
     best_key, _ = extracellular_key.most_common(1)[0]
+    logger.info('{} is extracellular compartment'.format(best_key))
     return best_key
 
 
@@ -244,7 +245,8 @@ def reactions_to_files(model, dest, yaml_args, exchange, split_subsystem):
                     common_reactions.append(reaction)
             else:
                 reactions_dump = list(
-                    model_reactions(common_reactions, model, exchange=exchange))
+                    model_reactions(common_reactions, model,
+                                    exchange=exchange))
                 if len(reactions_dump) > 0:
                     mkdir_p(os.path.join(dest, subsystem_folder))
                     subsystem_file = os.path.join(
